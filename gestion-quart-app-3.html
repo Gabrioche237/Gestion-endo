@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0d9488">
+    <title>Gestion de Quart</title>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        body {
+            background: #f8fafc;
+            color: #1e293b;
+        }
+        
+        /* Installation banner */
+        #install-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%);
+            color: white;
+            padding: 12px 16px;
+            font-size: 13px;
+            text-align: center;
+            z-index: 1000;
+            display: none;
+        }
+        
+        #install-banner.show {
+            display: block;
+        }
+        
+        #install-banner button {
+            background: rgba(255,255,255,0.25);
+            border: 1px solid rgba(255,255,255,0.4);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            margin-left: 12px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 12px;
+        }
+        
+        #install-banner button:active {
+            background: rgba(255,255,255,0.35);
+        }
+        
+        #root {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <!-- Installation prompt for mobile -->
+    <div id="install-banner">
+        💾 Installer comme app sur votre appareil
+        <button id="install-btn">Installer</button>
+    </div>
+
+    <div id="root"></div>
+
+    <!-- React & Dependencies from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide icons from CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script type="text/plain" id="app-source">
+        const { useState, useEffect } = React;
+
+        /* ================================================================
+           ICONS (simplified versions since we're using Lucide from CDN)
+           ================================================================ */
+        
+        // For this setup, we'll use emoji fallbacks for icons
+        const Icons = {
+          ClipboardList: () => <span>📋</span>,
+          CalendarDays: () => <span>📅</span>,
+          Settings: () => <span>⚙️</span>,
+          Gauge: () => <span>📊</span>,
+          Plus: ({ size = 20 }) => <span style={{fontSize: size}}>➕</span>,
+          Minus: ({ size = 20 }) => <span style={{fontSize: size}}>➖</span>,
+          X: ({ size = 20 }) => <span style={{fontSize: size}}>❌</span>,
+          RotateCcw: () => <span>🔄</span>,
+          AlertTriangle: () => <span>⚠️</span>,
+          Clock: () => <span>⏱️</span>,
+          Check: () => <span>✓</span>,
+          Wind: () => <span>💨</span>,
+          FlaskConical: () => <span>🧪</span>,
+          Trash2: () => <span>🗑️</span>,
+        };
+
+        // Monkey-patch lucide icons if available
+        if (window.lucide) {
+          Object.keys(window.lucide).forEach(key => {
+            Icons[key] = window.lucide[key];
+          });
+        }
+
+        /* ================================================================
+           ORIGINAL COMPONENT CODE
+           ================================================================ */
+
+        const SHIFT_START = 15 * 60 + 30;
+        const TARGET = 23 * 60;
+        const BREAKS_BEFORE = 60;
+        const NET_BUDGET = TARGET - SHIFT_START - BREAKS_BEFORE;
+
+        const DEFAULT_TIMES = {
+          prep: 60, closing: 45,
+          room_none: 30, room_c1: 35, room_air: 35, room_c2: 45, room_c3: 60,
+          bed13_none: 15, bed13_c1: 25, bed13_air: 25, bed13_c2: 35, bed13_c3: 45,
+          single_c1: 15, single_c2: 20, single_c3: 25,
+          depart_none: 25, depart_c1: 35, depart_air: 35, depart_c2: 45, depart_c3: 60,
+          floor_corridor: 15, floor_recovery: 15, bathroom: 7, sterile: 25, accueil: 10,
+          dictee: 10, rangement: 10,
+          glass: 20, height: 60,
+        };
+
+        const ISO = [
+          { id: "none", label: "Normal", short: "Normal" },
+          { id: "c1", label: "Contact 1", short: "C1" },
+          { id: "c2", label: "Contact 2", short: "C2" },
+          { id: "c3", label: "Contact 3", short: "C3" },
+          { id: "air", label: "Aérienne", short: "Aér." },
+        ];
+        const ISO_BED = ISO.filter((i) => ["c1", "c2", "c3"].includes(i.id));
+        const RANK = { none: 0, c1: 1, air: 1, c2: 2, c3: 3 };
+        const DAYS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+
+        const isoColor = (t) =>
+          t === "none" ? "bg-slate-100 text-slate-600"
+          : t === "c1" ? "bg-sky-100 text-sky-700"
+          : t === "c2" ? "bg-amber-100 text-amber-700"
+          : t === "c3" ? "bg-red-100 text-red-700"
+          : "bg-violet-100 text-violet-700";
+
+        const store = {
+          async get(key, def) {
+            try {
+              if (window.storage) {
+                const r = await window.storage.get(key);
+                return r ? JSON.parse(r.value) : def;
+              }
+              const raw = localStorage.getItem('gq_' + key);
+              return raw != null ? JSON.parse(raw) : def;
+            } catch { return def; }
+          },
+          async set(key, val) {
+            try {
+              if (window.storage) {
+                await window.storage.set(key, JSON.stringify(val));
+                return;
+              }
+              localStorage.setItem('gq_' + key, JSON.stringify(val));
+            } catch {}
+          },
+        };
+
+        function dateKey(d = new Date()) {
+          return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        }
+        function mondayKey(d = new Date()) {
+          const x = new Date(d);
+          const off = (x.getDay() + 6) % 7;
+          x.setDate(x.getDate() - off);
+          return dateKey(x);
+        }
+
+        /* ================================================================
+           MAIN APP
+           ================================================================ */
+
+        function App() {
+          const [tab, setTab] = useState("today");
+          const [loaded, setLoaded] = useState(false);
+          const [times, setTimes] = useState(DEFAULT_TIMES);
+          const [week, setWeek] = useState(() => freshWeek());
+          const [today, setToday] = useState(() => freshDay());
+          const [checks, setChecks] = useState({});
+
+          useEffect(() => {
+            (async () => {
+              const t = await store.get("times", DEFAULT_TIMES);
+              setTimes({ ...DEFAULT_TIMES, ...t });
+              const savedWeek = await store.get("week", null);
+              setWeek(savedWeek && savedWeek.key === mondayKey() ? savedWeek : freshWeek());
+              const savedDay = await store.get("today", null);
+              const todayStr = dateKey();
+              const sameDay = savedDay && savedDay._date === todayStr;
+              setToday(sameDay ? savedDay : freshDay());
+              setChecks(sameDay ? await store.get("checks", {}) : {});
+              setLoaded(true);
+            })();
+          }, []);
+
+          useEffect(() => { if (loaded) store.set("times", times); }, [times, loaded]);
+          useEffect(() => { if (loaded) store.set("week", week); }, [week, loaded]);
+          useEffect(() => { if (loaded) store.set("today", today); }, [today, loaded]);
+          useEffect(() => { if (loaded) store.set("checks", checks); }, [checks, loaded]);
+
+          function freshDay() {
+            return {
+              _wd: new Date().getDay(),
+              _date: dateKey(),
+              rooms: [{ iso: "none" }, { iso: "none" }, { iso: "none" }, { iso: "none" }],
+              bed13: { iso: "none" },
+              singleBeds: [],
+              departs: [],
+              incl: { height: false, glass: false },
+            };
+          }
+          function freshWeek() {
+            return { key: mondayKey(), dayOff: null, height: "todo", glass: "todo" };
+          }
+
+          if (!loaded)
+            return (
+              <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-400">
+                Chargement…
+              </div>
+            );
+
+          const wd = today._wd;
+          const isMon = wd === 1, isTue = wd === 2;
+          const heightTodo = week.height === "todo";
+          const glassTodo = week.glass === "todo";
+          const inclHeight = today.incl.height && heightTodo;
+          const inclGlass = today.incl.glass && glassTodo;
+
+          const roomsTime = today.rooms.reduce((s, r) => s + times["room_" + r.iso], 0);
+          const bed13Time = times["bed13_" + today.bed13.iso];
+          const singleTime = today.singleBeds.reduce((s, b) => s + times["single_" + b], 0);
+          const departTime = today.departs.reduce((s, d) => s + times["depart_" + d], 0);
+          const extrasTime =
+            times.floor_corridor + times.floor_recovery + times.bathroom * 2 +
+            times.sterile + times.accueil;
+          const daySpecific = (isMon ? times.dictee : 0) + (isTue ? times.rangement : 0);
+          const weeklyTime = (inclHeight ? times.height : 0) + (inclGlass ? times.glass : 0);
+
+          const total =
+            times.prep + roomsTime + bed13Time + singleTime + departTime +
+            extrasTime + daySpecific + weeklyTime;
+
+          const margin = NET_BUDGET - total;
+          const finishMin = SHIFT_START + total + BREAKS_BEFORE;
+          const fits = margin >= 0;
+
+          const airRooms = today.rooms.filter((r) => r.iso === "air").length;
+          const bedAir = today.bed13.iso === "air";
+          const hasC3 =
+            today.rooms.some((r) => r.iso === "c3") || today.bed13.iso === "c3" ||
+            today.singleBeds.includes("c3") || today.departs.includes("c3");
+
+          const breakdown = [
+            { label: "Pré-quart", min: times.prep },
+            { label: "Salles de chirurgie (#1–4)", min: roomsTime },
+            { label: "Lit #13", min: bed13Time },
+            today.singleBeds.length && { label: `Lits simples (${today.singleBeds.length})`, min: singleTime },
+            today.departs.length && { label: `Départs (${today.departs.length})`, min: departTime },
+            { label: "Extras quotidiens", min: extrasTime },
+            daySpecific && { label: isMon ? "Salle de dictée" : "Rangement matériel propre", min: daySpecific },
+            inclHeight && { label: "Nettoyage en hauteur", min: times.height },
+            inclGlass && { label: "Nettoyage des vitres", min: times.glass },
+          ].filter(Boolean);
+
+          return (
+            <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "system-ui, -apple-system, sans-serif" }}>
+              <Header wd={wd} />
+
+              <main className="max-w-md mx-auto px-4 pb-28 pt-3">
+                {tab === "today" && (
+                  <TodayTab
+                    today={today} setToday={setToday} times={times}
+                    total={total} margin={margin} fits={fits} finishMin={finishMin}
+                    breakdown={breakdown} airRooms={airRooms} bedAir={bedAir} hasC3={hasC3}
+                    week={week} setWeek={setWeek} heightTodo={heightTodo} glassTodo={glassTodo}
+                  />
+                )}
+                {tab === "tasks" && (
+                  <TasksTab
+                    today={today} checks={checks} setChecks={setChecks}
+                    isMon={isMon} isTue={isTue} inclHeight={inclHeight} inclGlass={inclGlass}
+                  />
+                )}
+                {tab === "week" && <WeekTab week={week} setWeek={setWeek} wd={wd} />}
+                {tab === "settings" && <SettingsTab times={times} setTimes={setTimes} />}
+              </main>
+
+              <Nav tab={tab} setTab={setTab} />
+            </div>
+          );
+        }
+
+        function Header({ wd }) {
+          return (
+            <header className="bg-gradient-to-r from-teal-700 to-teal-600 text-white shadow-lg">
+              <div className="max-w-md mx-auto px-4 py-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="flex items-center justify-center w-10 h-10 bg-teal-600 rounded-2xl font-bold text-lg shadow-md">
+                    ⏱️
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest text-teal-100 font-semibold">Endoscopie</div>
+                    <div className="text-base font-bold">Gestion de quart</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-xs text-teal-100 px-1">
+                  <span>Hôpital de Saint-Eustache</span>
+                  <span>{DAYS[wd]} · 15:30–00:00</span>
+                </div>
+              </div>
+            </header>
+          );
+        }
+
+        function Nav({ tab, setTab }) {
+          const items = [
+            { id: "today", label: "Aujourd'hui", icon: "📊" },
+            { id: "tasks", label: "Tâches", icon: "📋" },
+            { id: "week", label: "Semaine", icon: "📅" },
+            { id: "settings", label: "Réglages", icon: "⚙️" },
+          ];
+          return (
+            <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 shadow-lg">
+              <div className="max-w-md mx-auto grid grid-cols-4">
+                {items.map(({ id, label, icon }) => (
+                  <button key={id} onClick={() => setTab(id)}
+                    className={`flex flex-col items-center gap-1 py-3 px-2 text-[10px] font-medium transition-colors ${
+                      tab === id ? "text-teal-600 bg-teal-50" : "text-slate-400"}`}>
+                    <span style={{fontSize: "20px"}}>{icon}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </nav>
+          );
+        }
+
+        function TodayTab({ today, setToday, times, total, margin, fits, finishMin, breakdown, airRooms, bedAir, hasC3, week, setWeek, heightTodo, glassTodo }) {
+          const pct = Math.min((total / NET_BUDGET) * 100, 100);
+          const toggleIncl = (k) => setToday({ ...today, incl: { ...today.incl, [k]: !today.incl[k] } });
+          const setStatus = (k, v) => setWeek({ ...week, [k]: v });
+          const pending = [
+            heightTodo && { k: "height", name: "Nettoyage en hauteur" },
+            glassTodo && { k: "glass", name: "Nettoyage des vitres" },
+          ].filter(Boolean);
+
+          return (
+            <div className="space-y-4">
+              <div className={`rounded-2xl p-4 text-white shadow-md ${fits ? "bg-gradient-to-br from-emerald-600 to-emerald-700" : "bg-gradient-to-br from-red-600 to-red-700"}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium opacity-90">Temps estimé</span>
+                  <span style={{fontSize: "20px"}}>⏱️</span>
+                </div>
+                <div className="mt-2 flex items-end gap-2">
+                  <span className="text-4xl font-bold">{fmtDur(total)}</span>
+                  <span className="text-sm opacity-90 mb-1">/ {fmtDur(NET_BUDGET)}</span>
+                </div>
+
+                <div className="mt-3 h-2.5 rounded-full bg-white/30 overflow-hidden">
+                  <div className="h-full bg-white/90 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                </div>
+
+                <div className="mt-3 text-sm font-medium">
+                  {fits
+                    ? <>Fin vers <b>{fmtClock(finishMin)}</b> · marge de <b>{fmtDur(margin)}</b></>
+                    : <>Dépassement de <b>{fmtDur(-margin)}</b> · fin vers <b>{fmtClock(finishMin)}</b></>}
+                </div>
+              </div>
+
+              {(bedAir || airRooms > 0 || hasC3) && (
+                <div className="space-y-2">
+                  {bedAir && <Warn tone="violet">💨 Lit #13 aérien : <b>20 min d'attente</b> avant nettoyage</Warn>}
+                  {airRooms > 0 && <Warn tone="violet">💨 {airRooms} salle(s) aérienne(s) : <b>20 min d'attente</b> chacune</Warn>}
+                  {hasC3 && <Warn tone="red">⚠️ Contact 3 : <b>faire en dernier</b></Warn>}
+                </div>
+              )}
+
+              {pending.length > 0 && (
+                <Section title="Cette semaine" subtitle="Tâches hebdo">
+                  {pending.map((p) => (
+                    <div key={p.k} className="rounded-xl border border-slate-200 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-slate-700">{p.name}</span>
+                        <span className="text-xs text-slate-400">{fmtDur(times[p.k])}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => toggleIncl(p.k)}
+                          className={`flex-1 rounded-lg py-2 text-xs font-medium transition-colors ${
+                            today.incl[p.k] ? "bg-teal-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                          {today.incl[p.k] ? "✓ Inclus" : "Inclure"}
+                        </button>
+                        <button onClick={() => setStatus(p.k, "done")}
+                          className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">Fait</button>
+                        <button onClick={() => setStatus(p.k, "replacement")}
+                          className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">Rempl.</button>
+                      </div>
+                    </div>
+                  ))}
+                </Section>
+              )}
+
+              <Section title="Salles de chirurgie">
+                {today.rooms.map((r, i) => (
+                  <IsoRow key={i} label={`Salle #${i + 1}`} value={r.iso} options={ISO}
+                    onChange={(v) => setToday({ ...today, rooms: today.rooms.map((x, j) => j === i ? { iso: v } : x) })} />
+                ))}
+              </Section>
+
+              <Section title="Salle de récupération">
+                <IsoRow label="Lit #13" value={today.bed13.iso} options={ISO}
+                  onChange={(v) => setToday({ ...today, bed13: { iso: v } })} />
+
+                <div className="pt-3 border-t border-slate-100">
+                  <div className="text-sm font-medium text-slate-600 mb-2">Lits simples</div>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {today.singleBeds.map((b, i) => (
+                      <span key={i} className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ${isoColor(b)}`}>
+                        {ISO.find((o) => o.id === b).short}
+                        <button onClick={() => setToday({ ...today, singleBeds: today.singleBeds.filter((_, j) => j !== i) })}>❌</button>
+                      </span>
+                    ))}
+                    {today.singleBeds.length === 0 && <span className="text-xs text-slate-400">Aucun</span>}
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {ISO_BED.map((o) => (
+                      <button key={o.id} onClick={() => setToday({ ...today, singleBeds: [...today.singleBeds, o.id] })}
+                        className="rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-600">➕ {o.short}</button>
+                    ))}
+                  </div>
+                </div>
+              </Section>
+
+              <Section title="Départs" subtitle="Ajoute-les au fur et à mesure">
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {today.departs.map((d, i) => (
+                    <span key={i} className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ${isoColor(d)}`}>
+                      {ISO.find((o) => o.id === d).short}
+                      <button onClick={() => setToday({ ...today, departs: today.departs.filter((_, j) => j !== i) })}>❌</button>
+                    </span>
+                  ))}
+                  {today.departs.length === 0 && <span className="text-xs text-slate-400">Aucun</span>}
+                </div>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {ISO.map((o) => (
+                    <button key={o.id} onClick={() => setToday({ ...today, departs: [...today.departs, o.id] })}
+                      className="rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-600">➕ {o.short}</button>
+                  ))}
+                </div>
+              </Section>
+
+              <Section title="Détail">
+                <div className="space-y-1.5">
+                  {breakdown.map((b, i) => (
+                    <div key={i} className="flex justify-between text-sm">
+                      <span className="text-slate-600">{b.label}</span>
+                      <span className="font-semibold tabular-nums">{fmtDur(b.min)}</span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between border-t border-slate-100 pt-1.5 text-sm font-bold">
+                    <span>Total</span><span className="tabular-nums">{fmtDur(total)}</span>
+                  </div>
+                </div>
+              </Section>
+            </div>
+          );
+        }
+
+        function TasksTab({ today, checks, setChecks, isMon, isTue, inclHeight, inclGlass }) {
+          const toggle = (id) => setChecks({ ...checks, [id]: !checks[id] });
+          const reset = () => { if (confirm("Réinitialiser toutes les coches ?")) setChecks({}); };
+
+          const roomEntities = [
+            ...today.rooms.map((r, i) => ({ id: `room${i}`, name: `Salle #${i + 1}`, iso: r.iso })),
+            { id: "bed13", name: "Lit #13", iso: today.bed13.iso },
+          ].sort((a, b) => RANK[a.iso] - RANK[b.iso]);
+
+          const prep = [
+            { id: "p_trash", name: "Poubelles" },
+            { id: "p_cardboard", name: "Cartons" },
+            { id: "p_cart", name: "Remplir chariot" },
+            { id: "p_iso", name: "Vérifier isolations" },
+          ];
+          const extras = [
+            { id: "e_corridor", name: "Plancher corridor" },
+            { id: "e_recovery", name: "Plancher récupération" },
+            { id: "e_bath1", name: "Salle de bain 1" },
+            { id: "e_bath2", name: "Salle de bain 2" },
+            { id: "e_sterile", name: "Section stérile" },
+            { id: "e_accueil", name: "Accueil" },
+            ...(isMon ? [{ id: "e_dictee", name: "Salle de dictée (lun)" }] : []),
+            ...(isTue ? [{ id: "e_rangement", name: "Rangement (mar)" }] : []),
+            ...(inclHeight ? [{ id: "e_height", name: "Nettoyage en hauteur" }] : []),
+            ...(inclGlass ? [{ id: "e_glass", name: "Nettoyage vitres" }] : []),
+          ];
+          const closing = [
+            { id: "c_break", name: "Pause" },
+            { id: "c_cart", name: "Laver chariot" },
+            { id: "c_refill", name: "Réapprovisionner" },
+            { id: "c_trash", name: "Dernière poubelle" },
+          ];
+
+          return (
+            <div className="space-y-4">
+              <div className="flex justify-end">
+                <button onClick={reset} className="text-sm text-slate-500">🔄 Nouveau quart</button>
+              </div>
+
+              <CheckGroup title="Pré-quart" items={prep} checks={checks} toggle={toggle} />
+
+              <div>
+                <h2 className="mb-2 text-sm font-bold text-slate-800">Salles</h2>
+                <div className="rounded-2xl bg-white shadow-sm divide-y divide-slate-100">
+                  {roomEntities.map((r) => (
+                    <CheckItem key={r.id} id={r.id} checked={checks[r.id]} toggle={toggle}
+                      right={<span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${isoColor(r.iso)}`}>
+                        {ISO.find((o) => o.id === r.iso).short}
+                      </span>}>
+                      {r.name}
+                    </CheckItem>
+                  ))}
+                </div>
+              </div>
+
+              {today.departs.length > 0 && (
+                <div>
+                  <h2 className="mb-2 text-sm font-bold text-slate-800">Départs</h2>
+                  <div className="rounded-2xl bg-white shadow-sm divide-y divide-slate-100">
+                    {today.departs.map((d, i) => (
+                      <CheckItem key={`dp${i}`} id={`dp${i}`} checked={checks[`dp${i}`]} toggle={toggle}
+                        right={<span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${isoColor(d)}`}>{ISO.find((o) => o.id === d).short}</span>}>
+                        Départ #{i + 1}
+                      </CheckItem>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <CheckGroup title="Extras" items={extras} checks={checks} toggle={toggle} />
+              <CheckGroup title="Fermeture" items={closing} checks={checks} toggle={toggle} />
+            </div>
+          );
+        }
+
+        function WeekTab({ week, setWeek, wd }) {
+          const workDays = [1, 2, 3, 4, 5];
+
+          return (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-500">Indique ta journée de congé : le remplaçant la couvre.</p>
+
+              <Section title="Journée de congé">
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button onClick={() => setWeek({ ...week, dayOff: null })}
+                    className={`rounded-lg py-2 text-xs font-medium ${week.dayOff == null ? "bg-teal-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    Aucune
+                  </button>
+                  {workDays.map((d) => (
+                    <button key={d} onClick={() => setWeek({ ...week, dayOff: d })}
+                      className={`rounded-lg py-2 text-xs font-medium ${week.dayOff === d ? "bg-teal-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                      {DAYS[d].slice(0, 3)}
+                    </button>
+                  ))}
+                </div>
+              </Section>
+
+              <Section title="Rotation hebdo">
+                <StatusRow label="Nettoyage en hauteur" note="salles #1–4"
+                  value={week.height} onChange={(v) => setWeek({ ...week, height: v })} />
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  <StatusRow label="Nettoyage vitres" note="1× / semaine"
+                    value={week.glass} onChange={(v) => setWeek({ ...week, glass: v })} />
+                </div>
+              </Section>
+
+              <div className="space-y-2">
+                {workDays.map((d) => (
+                  <div key={d} className={`rounded-2xl bg-white p-3 shadow-sm ${d === wd ? "ring-2 ring-teal-500" : ""} ${week.dayOff === d ? "opacity-60" : ""}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">{DAYS[d]}</span>
+                      {d === wd && week.dayOff !== d && <span className="text-[11px] text-teal-600 font-medium">Aujourd'hui</span>}
+                      {week.dayOff === d && <span className="text-[11px] text-slate-500">Congé</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        function StatusRow({ label, note, value, onChange }) {
+          const opts = [
+            { id: "todo", label: "À faire", on: "bg-amber-500 text-white" },
+            { id: "done", label: "Fait", on: "bg-emerald-600 text-white" },
+            { id: "replacement", label: "Rempl.", on: "bg-slate-600 text-white" },
+          ];
+          return (
+            <div>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <span className="text-sm font-medium text-slate-700">{label}</span>
+                <span className="text-[11px] text-slate-400">{note}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {opts.map((o) => (
+                  <button key={o.id} onClick={() => onChange(o.id)}
+                    className={`rounded-lg py-1.5 text-xs font-medium ${value === o.id ? o.on : "bg-slate-100 text-slate-500"}`}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        function SettingsTab({ times, setTimes }) {
+          const set = (k, v) => setTimes({ ...times, [k]: Math.max(0, v) });
+          const groups = [
+            { title: "Quart", rows: [["prep", "Pré-quart"]] },
+            { title: "Salles chirurgie", rows: [
+              ["room_none", "Normal"], ["room_c1", "C1"], ["room_air", "Aérien"],
+              ["room_c2", "C2"], ["room_c3", "C3"]] },
+            { title: "Lit #13", rows: [
+              ["bed13_none", "Normal"], ["bed13_c1", "C1"], ["bed13_air", "Aérien"],
+              ["bed13_c2", "C2"], ["bed13_c3", "C3"]] },
+            { title: "Lits simples", rows: [
+              ["single_c1", "C1"], ["single_c2", "C2"], ["single_c3", "C3"]] },
+            { title: "Départs", rows: [
+              ["depart_none", "Sans iso"], ["depart_c1", "C1"], ["depart_air", "Aérien"],
+              ["depart_c2", "C2"], ["depart_c3", "C3"]] },
+            { title: "Extras", rows: [
+              ["floor_corridor", "Corridor"], ["floor_recovery", "Récupération"],
+              ["bathroom", "Salle de bain"], ["sterile", "Stérile"], ["accueil", "Accueil"]] },
+            { title: "Spécial", rows: [["dictee", "Dictée (lun)"], ["rangement", "Rangement (mar)"]] },
+            { title: "Hebdo", rows: [["glass", "Vitres"], ["height", "En hauteur"]] },
+          ];
+
+          return (
+            <div className="space-y-4">
+              <Warn tone="amber">⚠️ Ajuste les temps à mesure que tu accélères.</Warn>
+
+              {groups.map((g) => (
+                <Section key={g.title} title={g.title}>
+                  {g.rows.map(([k, label]) => (
+                    <div key={k} className="flex items-center justify-between gap-3">
+                      <span className="text-sm text-slate-600">{label}</span>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => set(k, times[k] - 5)} className="h-7 w-7 rounded bg-slate-100 text-slate-500 text-sm">➖</button>
+                        <input type="number" value={times[k]} onChange={(e) => set(k, Number(e.target.value))}
+                          className="w-12 rounded border border-slate-200 py-1 text-center text-sm font-semibold" />
+                        <button onClick={() => set(k, times[k] + 5)} className="h-7 w-7 rounded bg-slate-100 text-slate-500 text-sm">➕</button>
+                      </div>
+                    </div>
+                  ))}
+                </Section>
+              ))}
+
+              <button onClick={() => { if (confirm("Rétablir par défaut ?")) setTimes(DEFAULT_TIMES); }}
+                className="w-full rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-500">
+                Rétablir par défaut
+              </button>
+            </div>
+          );
+        }
+
+        /* ================================================================
+           SHARED COMPONENTS
+           ================================================================ */
+
+        function Section({ title, subtitle, children }) {
+          return (
+            <section className="rounded-2xl bg-white p-4 shadow-sm">
+              <h2 className="text-sm font-bold text-slate-800">{title}</h2>
+              {subtitle && <p className="mb-2 text-[11px] text-slate-400">{subtitle}</p>}
+              <div className="mt-2 space-y-3">{children}</div>
+            </section>
+          );
+        }
+
+        function IsoRow({ label, value, options, onChange }) {
+          return (
+            <div>
+              <div className="text-sm font-medium text-slate-600 mb-1.5">{label}</div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {options.map((o) => (
+                  <button key={o.id} onClick={() => onChange(o.id)}
+                    className={`rounded-lg py-1.5 text-xs font-medium transition-colors ${
+                      value === o.id ? isoColor(o.id) + " ring-2 ring-offset-1 ring-slate-300" : "bg-slate-50 text-slate-400"}`}>
+                    {o.short}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        function CheckGroup({ title, items, checks, toggle }) {
+          return (
+            <div>
+              <h2 className="mb-2 text-sm font-bold text-slate-800">{title}</h2>
+              <div className="rounded-2xl bg-white shadow-sm divide-y divide-slate-100">
+                {items.map((it) => (
+                  <CheckItem key={it.id} id={it.id} checked={checks[it.id]} toggle={toggle}>{it.name}</CheckItem>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        function CheckItem({ id, checked, toggle, children, right }) {
+          return (
+            <button onClick={() => toggle(id)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors">
+              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${
+                checked ? "border-teal-600 bg-teal-600" : "border-slate-300"}`}>
+                {checked && <span className="text-white font-bold">✓</span>}
+              </span>
+              <span className={`flex-1 text-sm ${checked ? "text-slate-400 line-through" : "text-slate-700"}`}>{children}</span>
+              {right}
+            </button>
+          );
+        }
+
+        function Warn({ tone, children }) {
+          const c = tone === "red" ? "bg-red-50 text-red-700 border-red-200"
+            : tone === "violet" ? "bg-violet-50 text-violet-700 border-violet-200"
+            : "bg-amber-50 text-amber-800 border-amber-200";
+          return (
+            <div className={`rounded-xl border p-3 text-sm ${c}`}>
+              {children}
+            </div>
+          );
+        }
+
+        /* ================================================================
+           UTILITIES
+           ================================================================ */
+
+        function fmtDur(min) {
+          min = Math.round(min);
+          const h = Math.floor(min / 60), m = min % 60;
+          if (h && m) return `${h}h ${m}m`;
+          if (h) return `${h}h`;
+          return `${m}m`;
+        }
+
+        function fmtClock(min) {
+          let m = ((min % 1440) + 1440) % 1440;
+          const h = Math.floor(m / 60), mm = m % 60;
+          return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+        }
+
+        /* ================================================================
+           RENDER
+           ================================================================ */
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+      </script>
+
+      <script>
+        // Manually transform and run the app code above.
+        // We do this explicitly (instead of relying on Babel's automatic
+        // type="text/babel" scanning) because newer Babel versions default
+        // the JSX transform to "automatic" mode, which injects an ES
+        // `import` statement — and `import` throws in a plain script,
+        // silently killing the whole page (blank screen, no error shown).
+        // Forcing the classic runtime avoids that import entirely.
+        try {
+          const source = document.getElementById('app-source').textContent;
+          const { code } = Babel.transform(source, {
+            presets: [['react', { runtime: 'classic' }]],
+            sourceType: 'script',
+            filename: 'app.jsx',
+          });
+          new Function(code)();
+        } catch (err) {
+          console.error(err);
+          document.getElementById('root').innerHTML =
+            '<div style="padding:20px;color:#b91c1c;font-family:monospace;' +
+            'white-space:pre-wrap;font-size:13px;line-height:1.5;">' +
+            '⚠️ Erreur de chargement de l\'app:\n\n' +
+            (err && err.message ? err.message.replace(/</g, '&lt;') : String(err)) +
+            '</div>';
+        }
+      </script>
+
+      <script>
+        // PWA install prompt
+        let deferredPrompt;
+        const installBanner = document.getElementById('install-banner');
+        const installBtn = document.getElementById('install-btn');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          deferredPrompt = e;
+          installBanner.classList.add('show');
+        });
+
+        installBtn.addEventListener('click', async () => {
+          if (deferredPrompt) {
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            deferredPrompt = null;
+            installBanner.classList.remove('show');
+          }
+        });
+      </script>
+</body>
+</html>
